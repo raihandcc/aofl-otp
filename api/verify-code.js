@@ -7,27 +7,27 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-const allowedOrigin = process.env.AOFL_FORM_ORIGIN || '*';
+function cors(res) {
+  res.setHeader(
+    'Access-Control-Allow-Origin',
+    process.env.AOFL_ALLOWED_ORIGIN || '*'
+  );
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-store');
+}
 
-function phoneNumber(value) {
-  const digits = String(value || '').replace(/\D/g, '');
+function normalizePhone(value) {
+  const d = String(value || '').replace(/\D/g, '');
 
-  if (digits.length === 10) {
-    return '+1' + digits;
-  }
-
-  if (digits.length === 11 && digits.startsWith('1')) {
-    return '+' + digits;
-  }
+  if (d.length === 10) return '+1' + d;
+  if (d.length === 11 && d.startsWith('1')) return '+' + d;
 
   return null;
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Cache-Control', 'no-store');
+  cors(res);
 
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -41,42 +41,42 @@ export default async function handler(req, res) {
   }
 
   try {
-    const phone = phoneNumber(req.body?.phone);
-    const code = String(req.body?.code || '');
+    const phone = normalizePhone(req.body?.phone);
+    const code = String(req.body?.code || '').trim();
 
     if (!phone || !/^\d{4,10}$/.test(code)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid phone number or verification code'
+        error: 'Invalid phone or code'
       });
     }
 
-    const secret = process.env.AOFL_WEBHOOK_SECRET;
-
-    if (!secret) {
-      throw new Error('Missing server secret');
-    }
-
-    const result = await client.verify.v2
+    const check = await client.verify.v2
       .services(process.env.TWILIO_VERIFY_SERVICE_SID)
       .verificationChecks.create({
         to: phone,
         code
       });
 
-    if (result.status !== 'approved') {
+    if (check.status !== 'approved') {
       return res.status(403).json({
         success: false,
-        status: result.status,
         error: 'Incorrect verification code'
       });
+    }
+
+    const secret = process.env.AOFL_WEBHOOK_SECRET;
+
+    if (!secret) {
+      throw new Error('Missing AOFL_WEBHOOK_SECRET');
     }
 
     const payload = Buffer.from(
       JSON.stringify({
         phone,
         exp: Date.now() + 10 * 60 * 1000
-      })
+      }),
+      'utf8'
     ).toString('base64url');
 
     const signature = crypto
@@ -90,8 +90,8 @@ export default async function handler(req, res) {
       verificationToken: payload + '.' + signature
     });
 
-  } catch (error) {
-    console.error('OTP verification error:', error);
+  } catch (err) {
+    console.error('verify-code:', err);
 
     return res.status(500).json({
       success: false,
